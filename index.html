@@ -1,1 +1,368 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <link rel="stylesheet" href="/styles.css">
+</head>
+
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">Z</div>
+
+        <div>
+          <strong>ZANELLI</strong>
+          <span>Supabase</span>
+        </div>
+      </div>
+
+      <nav class="menu">
+        <button id="menuDashboard" class="menu-item active" onclick="mostrarTela('dashboard')">Dashboard</button>
+        <button id="menuKanban" class="menu-item" onclick="mostrarTela('kanban')">Kanban Produção</button>
+        <button id="menuPedidos" class="menu-item" onclick="mostrarTela('pedidos')">Pedidos</button>
+        <button id="menuImportacao" class="menu-item" onclick="abrirImportacao()">Importar pedido</button>
+        <button id="menuAdmin" class="menu-item hidden" onclick="mostrarTela('admin')">Administração</button>
+      </nav>
+
+      <div class="user-box hidden" id="userBox">
+        <strong id="userNome">Usuário</strong>
+        <span id="userPerfil">Perfil</span>
+        <button class="btn btn-light btn-block" type="button" onclick="logout()">Sair</button>
+      </div>
+
+      <div class="sidebar-footer">
+        <button class="btn btn-light btn-block" onclick="testarConexao()">Testar conexão</button>
+        <span id="versaoApp">Versão</span>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">GESTÃO COMERCIAL E PRODUÇÃO</p>
+          <h1 id="tituloTela">Central de Pedidos</h1>
+        </div>
+
+        <div class="topbar-actions">
+          <button id="btnImportarTopo" class="btn btn-primary" onclick="abrirImportacao()">+ Importar novo pedido</button>
+        </div>
+      </header>
+
+      <section id="telaDashboard">
+        <div class="cards">
+          <article class="metric-card"><span>Pedidos cadastrados</span><strong id="mTotalPedidos">0</strong></article>
+          <article class="metric-card"><span>Peças em carteira</span><strong id="mQtdTotal">0</strong></article>
+          <article class="metric-card"><span>Pedidos atrasados</span><strong id="mAtrasados">0</strong></article>
+          <article class="metric-card"><span>Pedidos parados</span><strong id="mParados">0</strong></article>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Últimos pedidos</h2>
+                <p>Visão resumida. Para consulta completa, acesse o menu Pedidos.</p>
+              </div>
+              <button class="btn btn-light" onclick="mostrarTela('pedidos')">Ver todos</button>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Pedido</th>
+                    <th>Cliente</th>
+                    <th>Entrega</th>
+                    <th>Qtd.</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+
+                <tbody id="tabelaRecentes">
+                  <tr><td colspan="5" class="empty-state">Carregando...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Gargalos por etapa</h2>
+                <p>Pedidos por etapa atual.</p>
+              </div>
+            </div>
+
+            <div id="listaGargalos" class="gargalos-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="telaKanban" class="hidden">
+        <div class="panel kanban-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Kanban de Produção</h2>
+              <p>Clique no card para atualizar somente a etapa atual.</p>
+            </div>
+
+            <div class="panel-actions">
+              <input id="buscaKanban" class="input busca" type="search" placeholder="Buscar pedido, corte ou cliente..." oninput="renderizarKanban()">
+              <button class="btn btn-light" onclick="carregarSistema(true)">Atualizar</button>
+            </div>
+          </div>
+
+          <div id="kanbanBoard" class="kanban-board"></div>
+        </div>
+      </section>
+
+      <section id="telaPedidos" class="hidden">
+        <div class="panel pedidos-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Pedidos</h2>
+              <p>Listagem completa dos pedidos, prazos, etapas e anexos.</p>
+            </div>
+
+            <div class="panel-actions">
+              <input id="buscaPedidosCompleto" class="input busca" type="search" placeholder="Buscar pedido, corte ou cliente..." oninput="reiniciarPaginacaoPedidos()">
+
+              <select id="filtroPedidos" class="input filtro" onchange="reiniciarPaginacaoPedidos()">
+                <option value="todos">Todos</option>
+                <option value="atrasados">Atrasados</option>
+                <option value="proximos7">Próximos 7 dias</option>
+                <option value="proximos30">Próximos 30 dias</option>
+                <option value="parados">Parados</option>
+                <option value="concluidos">Concluídos</option>
+              </select>
+
+              <button class="btn btn-light" onclick="carregarSistema(true)">Atualizar</button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="tabela-pedidos-completa">
+              <thead>
+                <tr>
+                  <th>Pedido</th>
+                  <th>Cliente</th>
+                  <th>Entrada</th>
+                  <th>Entrega</th>
+                  <th>Prazo</th>
+                  <th>Qtd.</th>
+                  <th>Etapa atual</th>
+                  <th>Dias entrega</th>
+                  <th>Parado</th>
+                  <th>Anexos</th>
+                </tr>
+              </thead>
+
+              <tbody id="tabelaPedidosCompleto">
+                <tr><td colspan="10" class="empty-state">Carregando pedidos...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="paginacaoPedidos" class="actions"></div>
+        </div>
+      </section>
+
+      <section id="telaImportacao" class="hidden">
+        <div class="panel import-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Importar pedido</h2>
+              <p>Selecione a planilha Excel. O sistema lê os dados, gera o PDF e cria automaticamente as etapas no Supabase.</p>
+            </div>
+          </div>
+
+          <div id="etapaUpload">
+            <label class="upload-zone" for="arquivoExcel">
+              <span class="upload-icon">↑</span>
+              <strong>Selecionar planilha do pedido</strong>
+              <small>Arquivos XLS ou XLSX</small>
+              <input id="arquivoExcel" type="file" accept=".xls,.xlsx" onchange="selecionarExcel(event)">
+            </label>
+
+            <div id="arquivoSelecionado" class="file-card hidden"></div>
+
+            <div class="actions">
+              <button class="btn btn-light" onclick="mostrarTela('dashboard')">Cancelar</button>
+              <button id="btnAnalisar" class="btn btn-primary" onclick="analisarPedido()" disabled>Analisar pedido</button>
+            </div>
+          </div>
+
+          <div id="etapaConferencia" class="hidden">
+            <div id="alertasInterpretacao"></div>
+            <div id="statusPdfAutomatico" class="success-box"></div>
+
+            <div class="form-grid">
+              <label><span>Número do pedido</span><input id="numeroPedido" class="input" type="text"></label>
+              <label><span>Data de entrada</span><input id="dataEntrada" class="input" type="text" placeholder="dd/mm/aaaa" oninput="recalcularDataEntrega()"></label>
+              <label class="col-2"><span>Cliente</span><input id="cliente" class="input" type="text"></label>
+              <label><span>Prazo original</span><input id="prazoOriginal" class="input" type="text" oninput="recalcularPrazoManual()"></label>
+              <label><span>Prazo máximo</span><input id="prazoMax" class="input" type="number" min="1" oninput="recalcularDataEntrega()"></label>
+              <label><span>Data limite de entrega</span><input id="dataEntrega" class="input" type="text" readonly></label>
+            </div>
+
+            <div class="items-header">
+              <div>
+                <h3>Itens identificados</h3>
+                <p>Revise descrições, tecidos, cores e quantidades.</p>
+              </div>
+              <button class="btn btn-light" onclick="adicionarItem()">+ Adicionar item</button>
+            </div>
+
+            <div id="listaItens"></div>
+
+            <div class="summary-bar">
+              <div><span>Quantidade de itens</span><strong id="qtdItensResumo">0</strong></div>
+              <div><span>Quantidade total do pedido</span><strong id="qtdTotalResumo">0</strong></div>
+            </div>
+
+            <div class="actions">
+              <button class="btn btn-light" onclick="voltarUpload()">Voltar</button>
+              <button class="btn btn-primary" onclick="confirmarImportacao(false)">Confirmar importação</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="telaAdmin" class="hidden">
+        <div class="panel pedidos-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Administração</h2>
+              <p>Cadastro de usuários, perfis e permissões.</p>
+            </div>
+
+            <div class="panel-actions">
+              <button class="btn btn-light" onclick="carregarUsuarios()">Atualizar usuários</button>
+              <button class="btn btn-primary" onclick="abrirModalUsuario()">+ Novo usuário</button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>E-mail</th>
+                  <th>Perfil</th>
+                  <th>Ativo</th>
+                  <th>Último acesso</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="tabelaUsuarios">
+                <tr><td colspan="6" class="empty-state">Carregando usuários...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <div id="modalEtapaRapida" class="modal-overlay hidden">
+    <div class="modal-box modal-small">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">ETAPA ATUAL</p>
+          <h2 id="modalEtapaTitulo">Pedido</h2>
+        </div>
+        <button class="icon-btn" onclick="fecharModalEtapaRapida()">×</button>
+      </div>
+
+      <div id="modalEtapaConteudo"></div>
+    </div>
+  </div>
+
+  <div id="modalDetalhe" class="modal-overlay hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">DETALHE COMPLETO</p>
+          <h2 id="modalDetalheTitulo">Pedido</h2>
+        </div>
+        <button class="icon-btn" onclick="fecharDetalhePedido()">×</button>
+      </div>
+
+      <div id="modalDetalheConteudo"></div>
+    </div>
+  </div>
+
+
+  <div id="loginOverlay" class="login-overlay">
+    <div class="login-card">
+      <div class="brand login-brand">
+        <div class="brand-mark">Z</div>
+        <div>
+          <strong>ZANELLI</strong>
+          <span>Central de Pedidos</span>
+        </div>
+      </div>
+
+      <h2>Entrar no sistema</h2>
+      <p>Use seu e-mail e senha cadastrados no Supabase.</p>
+
+      <div id="loginForm" class="login-form">
+        <label>
+          <span>E-mail</span>
+          <input id="loginEmail" class="input" type="email" autocomplete="email">
+        </label>
+
+        <label>
+          <span>Senha</span>
+          <input id="loginSenha" class="input" type="password" autocomplete="current-password">
+        </label>
+
+        <div id="btnLogin" class="btn btn-primary btn-block login-btn" role="button" tabindex="0">Entrar</div>
+        <small id="loginMsg"></small>
+      </div>
+    </div>
+  </div>
+
+
+  <div id="modalUsuario" class="modal-overlay hidden">
+    <div class="modal-box modal-small">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">ADMINISTRAÇÃO</p>
+          <h2 id="modalUsuarioTitulo">Usuário</h2>
+        </div>
+        <button class="icon-btn" onclick="fecharModalUsuario()">×</button>
+      </div>
+      <div id="modalUsuarioConteudo"></div>
+    </div>
+  </div>
+
+  <div id="modalEditarPedido" class="modal-overlay hidden">
+    <div class="modal-box modal-small">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">PEDIDO</p>
+          <h2 id="modalEditarPedidoTitulo">Editar pedido</h2>
+        </div>
+        <button class="icon-btn" onclick="fecharModalEditarPedido()">×</button>
+      </div>
+      <div id="modalEditarPedidoConteudo"></div>
+    </div>
+  </div>
+
+  <div id="loading" class="loading-overlay hidden">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <strong id="loadingTexto">Processando...</strong>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/rpc-client.js"></script><script src="/app.js"></script>
+</body>
+</html>
 

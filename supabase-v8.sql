@@ -1,4 +1,5 @@
 begin;
+alter table public.pedidos add column if not exists numero_corte text;
 alter table public.pedidos_etapas add column if not exists costura_externa boolean not null default false;
 update public.pedidos_etapas set costura_externa = false where etapa <> 'COSTURA' or costura_externa is null;
 
@@ -65,6 +66,7 @@ $$;
 
 revoke all on function public.importar_pedido_atomico(jsonb,jsonb,jsonb) from public, anon, authenticated;
 grant execute on function public.importar_pedido_atomico(jsonb,jsonb,jsonb) to service_role;
+notify pgrst, 'reload schema';
 commit;
 
 -- Limpeza operacional: executar somente após confirmar projeto e versão publicada.

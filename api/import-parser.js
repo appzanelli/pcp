@@ -111,7 +111,7 @@ export function normalizeGrade(grade) {
   return result;
 }
 
-export function financialClearRanges(rawRows, shownRows, sheetName) {
+export function financialClearRanges(rawRows, shownRows, sheetName, worksheet = null) {
   const header = findItemHeader(shownRows);
   if (!header) return [];
   const normalizedHeader = (shownRows[header.row] || []).map(normalized);
@@ -131,6 +131,11 @@ export function financialClearRanges(rawRows, shownRows, sheetName) {
   for (let r=0;r<rawRows.length;r++) for (let c=0;c<(rawRows[r]||[]).length;c++) {
     const value=rawRows[r][c];
     if (typeof value==='string' && /^\s*R\$\s*[\d.,-]+\s*$/.test(value)) ranges.push(`${sheetRef(sheetName)}!${columnLetter(c)}${r+1}`);
+  }
+  if(worksheet)for(const [address,cell] of Object.entries(worksheet)){
+    if(address.startsWith('!')||!cell)continue;
+    const format=normalized(cell.z);
+    if((typeof cell.v==='number'||cell.f)&&/(?:R\$|\$|CURRENCY)/.test(format))ranges.push(`${sheetRef(sheetName)}!${address}`);
   }
   return [...new Set(ranges)];
 }

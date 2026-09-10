@@ -749,7 +749,7 @@ let estado = {
       <article class="kanban-card ${classe}" onclick="abrirEtapaAtual(decodeURIComponent('${encodeInlineArg(card.numeroPedido)}'))">
         <h4>Pedido ${escapeHtml(card.numeroPedido)}</h4>
         ${numeroCorteHtml(card.numeroCorte)}
-        ${card.etapaAtual === 'COSTURA' && card.costuraExterna ? '<span class="costura-externa-flag">COSTURA EXTERNA</span>' : ''}
+        ${card.costuraExterna ? '<span class="costura-externa-flag">COSTURA EXTERNA</span>' : ''}
         <p>${escapeHtml(card.cliente)}</p>
 
         <div class="kanban-meta">
@@ -815,7 +815,8 @@ let estado = {
           responsavel: card.responsavelAtual || '',
           observacao: card.observacaoAtual || '',
           statusEtapa: card.statusEtapaAtual || '',
-          diasEmAberto: card.diasParado || 0
+          diasEmAberto: card.diasParado || 0,
+          costuraExterna: Boolean(card.costuraExterna)
         },
         card
       });
@@ -877,6 +878,7 @@ let estado = {
           ${numeroCorteHtml(pedido.numeroCorte)}
         <p><strong>Entrega:</strong> ${escapeHtml(pedido.dataEntrega || '')} | <strong>Qtd.:</strong> ${Number(pedido.qtdTotal || 0).toLocaleString('pt-BR')}</p>
         <p><strong>Status:</strong> ${escapeHtml(etapa.statusEtapa || '')} | <strong>Dias em aberto:</strong> ${Number(etapa.diasEmAberto || 0)}</p>
+        ${dados.card?.costuraExterna || etapa.costuraExterna ? '<span class="costura-externa-flag">COSTURA EXTERNA</span>' : ''}
       </div>
 
       <div class="quick-form">
@@ -933,6 +935,8 @@ let estado = {
     };
 
     payload.auth = authPayload().auth;
+
+    if (!validarDatasEtapaFrontend(payload.dataInicio, payload.dataConclusao)) return;
 
     const botoes = document.querySelectorAll('#modalEtapaConteudo button');
     botoes.forEach(btn => btn.disabled = true);
@@ -1131,6 +1135,7 @@ let estado = {
     const pedido = detalhe.pedido;
     const etapas = detalhe.etapas || [];
     const itens = detalhe.itens || [];
+    const gargalo = detalhe.gargalo || null;
 
     document.getElementById('modalDetalheTitulo').textContent =
       `Pedido ${pedido.numeroPedido} — ${pedido.cliente}`;
@@ -1140,8 +1145,14 @@ let estado = {
         <div class="detail-card">
           <h3>Linha do tempo das etapas</h3>
 
+          <div class="leadtime-summary">
+            <div><span>Lead time total</span><strong>${Number(detalhe.leadTimeDias || 0)} dias</strong></div>
+            <div><span>Tempo somado nas etapas</span><strong>${Number(detalhe.somaEtapasDias || 0)} dias</strong></div>
+            <div><span>Operação gargalo</span><strong>${gargalo ? `${escapeHtml(gargalo.etapa)} · ${Number(gargalo.dias)} dias` : 'Ainda não calculada'}</strong></div>
+          </div>
+
           <div class="timeline">
-            ${etapas.length ? etapas.map(renderizarTimeline).join('') : '<p>Linha do tempo não carregada ainda. Clique em Atualizar se necessário.</p>'}
+            ${etapas.length ? etapas.map(etapa => renderizarTimeline(etapa, gargalo)).join('') : '<p>Linha do tempo não carregada ainda. Clique em Atualizar se necessário.</p>'}
           </div>
         </div>
 
@@ -1191,7 +1202,7 @@ let estado = {
     document.getElementById('modalDetalhe').classList.remove('hidden');
   }
 
-  function renderizarTimeline(etapa) {
+  function renderizarTimeline(etapa, gargalo) {
     const statusClass = etapa.statusEtapa === 'CONCLUÍDA'
       ? 'status-ok'
       : etapa.statusEtapa === 'EM ANDAMENTO'
@@ -1210,13 +1221,18 @@ let estado = {
           ${etapa.statusEtapa === 'CONCLUÍDA' ? '✓' : etapa.ordemEtapa}
         </div>
 
-        <div class="timeline-box">
+        <div class="timeline-box ${gargalo && gargalo.etapa === etapa.etapa && etapa.diasNaEtapa !== null ? 'timeline-bottleneck' : ''}">
           <div class="timeline-title">
             <strong>${escapeHtml(etapa.etapa)}</strong>
-            <span class="status ${statusClass}">${escapeHtml(etapa.statusEtapa)}</span>
+            <div class="timeline-tags">
+              ${etapa.costuraExterna ? '<span class="costura-externa-flag">COSTURA EXTERNA</span>' : ''}
+              ${gargalo && gargalo.etapa === etapa.etapa && etapa.diasNaEtapa !== null ? '<span class="bottleneck-flag">GARGALO</span>' : ''}
+              <span class="status ${statusClass}">${escapeHtml(etapa.statusEtapa)}</span>
+            </div>
           </div>
 
           <p><strong>Início:</strong> ${escapeHtml(etapa.dataInicio || '-')} | <strong>Conclusão:</strong> ${escapeHtml(etapa.dataConclusao || '-')}</p>
+          <p><strong>Tempo na etapa:</strong> ${etapa.diasNaEtapa === null || etapa.diasNaEtapa === undefined ? '-' : `${Number(etapa.diasNaEtapa)} dias`}</p>
           <p><strong>Responsável:</strong> ${escapeHtml(etapa.responsavel || '-')}</p>
           ${etapa.observacao ? `<p><strong>Obs.:</strong> ${escapeHtml(etapa.observacao)}</p>` : ''}
           ${pode('ALTERAR_QUALQUER_ETAPA') ? `<div class="actions" style="margin-top:10px"><button class="btn btn-light" onclick="editarEtapaLinhaTempo('${escapeAttr(etapa.id)}')">Editar etapa</button></div>` : ''}
@@ -1562,7 +1578,7 @@ let estado = {
     estado.etapaEdicaoLivre = etapa;
     document.getElementById('modalEtapaTitulo').textContent = `Editar ${etapa.etapa}`;
     document.getElementById('modalEtapaConteudo').innerHTML = `
-      <div class="quick-summary"><p><strong>Pedido ${escapeHtml(etapa.numeroPedido)}</strong></p>${numeroCorteHtml(pedido.numeroCorte)}</div>
+      <div class="quick-summary"><p><strong>Pedido ${escapeHtml(etapa.numeroPedido)}</strong></p>${numeroCorteHtml(pedido.numeroCorte)}${etapa.costuraExterna ? '<span class="costura-externa-flag">COSTURA EXTERNA</span>' : ''}</div>
       <div class="quick-form">
         <div class="quick-form-grid">
           <label><span>Data início</span><input id="edicaoEtapaInicio" class="input" type="text" placeholder="dd/mm/aaaa" value="${escapeHtml(etapa.dataInicio || '')}"></label>
@@ -1590,6 +1606,7 @@ let estado = {
       numeroCorte: document.getElementById('edicaoEtapaNumeroCorte') ? document.getElementById('edicaoEtapaNumeroCorte').value.trim() : '',
       costuraExterna: document.getElementById('edicaoCosturaExterna') ? document.getElementById('edicaoCosturaExterna').checked : false
     };
+    if (!validarDatasEtapaFrontend(etapa.dataInicio, etapa.dataConclusao)) return;
     exibirLoading('Salvando etapa...');
     google.script.run.withSuccessHandler(resposta => {
       if (resposta.etapa) atualizarEtapaLocal(resposta.etapa);
@@ -1709,6 +1726,18 @@ let estado = {
       String(data.getMonth() + 1).padStart(2, '0'),
       data.getFullYear()
     ].join('/');
+  }
+
+  function validarDatasEtapaFrontend(inicioTexto, conclusaoTexto) {
+    const inicio = inicioTexto ? parseDataBR(inicioTexto) : null;
+    const conclusao = conclusaoTexto ? parseDataBR(conclusaoTexto) : null;
+    if (inicioTexto && !inicio) { mostrarToast('Data de início inválida. Use dd/mm/aaaa.'); return false; }
+    if (conclusaoTexto && !conclusao) { mostrarToast('Data de conclusão inválida. Use dd/mm/aaaa.'); return false; }
+    if (conclusao && !inicio) { mostrarToast('Informe a data de início antes da conclusão.'); return false; }
+    const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+    if (conclusao && conclusao > hoje) { mostrarToast('A data de conclusão não pode ser futura.'); return false; }
+    if (inicio && conclusao && conclusao < inicio) { mostrarToast('A conclusão não pode ser anterior ao início.'); return false; }
+    return true;
   }
 
   function setValor(id, valor) {

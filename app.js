@@ -178,6 +178,7 @@ let estado = {
     estado.usuario = null;
     estado.permissoes = {};
     sessionStorage.removeItem('ZANELLI_V70_AUTH');
+    sessionStorage.removeItem('ZANELLI_V70_SUPABASE_ESTADO');
     localStorage.removeItem('ZANELLI_V60_AUTH');
     localStorage.removeItem('ZANELLI_V70_SUPABASE_ESTADO');
     localStorage.removeItem('ZANELLI_V42_SUPABASE_ESTADO');
@@ -748,6 +749,7 @@ let estado = {
       <article class="kanban-card ${classe}" onclick="abrirEtapaAtual(decodeURIComponent('${encodeInlineArg(card.numeroPedido)}'))">
         <h4>Pedido ${escapeHtml(card.numeroPedido)}</h4>
         ${numeroCorteHtml(card.numeroCorte)}
+        ${card.etapaAtual === 'COSTURA' && card.costuraExterna ? '<span class="costura-externa-flag">COSTURA EXTERNA</span>' : ''}
         <p>${escapeHtml(card.cliente)}</p>
 
         <div class="kanban-meta">
@@ -891,6 +893,7 @@ let estado = {
         </div>
 
         ${Number(etapa.ordemEtapa) === 1 ? `<label><span>Nº CORTE</span><input id="rapidoNumeroCorte" class="input" type="text" value="${escapeHtml(pedido.numeroCorte || '')}" ${podeEditarEtapaAtual ? '' : 'disabled'}></label>` : ''}
+        ${etapa.etapa === 'COSTURA' ? `<label class="check-option"><input id="rapidoCosturaExterna" type="checkbox" ${etapa.costuraExterna ? 'checked' : ''} ${podeEditarEtapaAtual ? '' : 'disabled'}><span>Este pedido está em costura externa</span></label>` : ''}
 
         <label>
           <span>${labelResponsavel}</span>
@@ -925,6 +928,7 @@ let estado = {
       responsavel: document.getElementById('rapidoResponsavel').value.trim(),
       observacao: document.getElementById('rapidoObs').value.trim(),
       numeroCorte: document.getElementById('rapidoNumeroCorte') ? document.getElementById('rapidoNumeroCorte').value.trim() : '',
+      costuraExterna: document.getElementById('rapidoCosturaExterna') ? document.getElementById('rapidoCosturaExterna').checked : false,
       concluir
     };
 
@@ -1565,6 +1569,7 @@ let estado = {
           <label><span>Data conclusão</span><input id="edicaoEtapaConclusao" class="input" type="text" placeholder="dd/mm/aaaa" value="${escapeHtml(etapa.dataConclusao || '')}"></label>
         </div>
         ${Number(etapa.ordemEtapa) === 1 ? `<label><span>Nº CORTE</span><input id="edicaoEtapaNumeroCorte" class="input" type="text" value="${escapeHtml(pedido.numeroCorte || '')}"></label>` : ''}
+        ${etapa.etapa === 'COSTURA' ? `<label class="check-option"><input id="edicaoCosturaExterna" type="checkbox" ${etapa.costuraExterna ? 'checked' : ''}><span>Este pedido está em costura externa</span></label>` : ''}
         <label><span>Responsável</span><input id="edicaoEtapaResponsavel" class="input" type="text" value="${escapeHtml(etapa.responsavel || '')}"></label>
         <label><span>Observação</span><textarea id="edicaoEtapaObs" class="textarea">${escapeHtml(etapa.observacao || '')}</textarea></label>
         <div class="actions"><button class="btn btn-light" onclick="fecharModalEtapaRapida()">Cancelar</button><button class="btn btn-primary" onclick="salvarEdicaoEtapaCompleta()">Salvar etapa</button></div>
@@ -1582,7 +1587,8 @@ let estado = {
       dataConclusao: document.getElementById('edicaoEtapaConclusao').value.trim(),
       responsavel: document.getElementById('edicaoEtapaResponsavel').value.trim(),
       observacao: document.getElementById('edicaoEtapaObs').value.trim(),
-      numeroCorte: document.getElementById('edicaoEtapaNumeroCorte') ? document.getElementById('edicaoEtapaNumeroCorte').value.trim() : ''
+      numeroCorte: document.getElementById('edicaoEtapaNumeroCorte') ? document.getElementById('edicaoEtapaNumeroCorte').value.trim() : '',
+      costuraExterna: document.getElementById('edicaoCosturaExterna') ? document.getElementById('edicaoCosturaExterna').checked : false
     };
     exibirLoading('Salvando etapa...');
     google.script.run.withSuccessHandler(resposta => {
@@ -1625,7 +1631,7 @@ let estado = {
         salvoEm: Date.now()
       };
 
-      localStorage.setItem('ZANELLI_V70_SUPABASE_ESTADO', JSON.stringify(payload));
+      sessionStorage.setItem('ZANELLI_V70_SUPABASE_ESTADO', JSON.stringify(payload));
     } catch (e) {
       console.error(e);
     }
@@ -1633,14 +1639,15 @@ let estado = {
 
   function lerEstadoLocal() {
     try {
-      const bruto = localStorage.getItem('ZANELLI_V70_SUPABASE_ESTADO');
+      const bruto = sessionStorage.getItem('ZANELLI_V70_SUPABASE_ESTADO');
 
       if (!bruto) return null;
 
       const payload = JSON.parse(bruto);
       const idade = Date.now() - Number(payload.salvoEm || 0);
 
-      if (idade > 1000 * 60 * 30) {
+      if (idade > 1000 * 60 * 5) {
+        sessionStorage.removeItem('ZANELLI_V70_SUPABASE_ESTADO');
         return null;
       }
 

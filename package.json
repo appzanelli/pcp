@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": { "build": "node scripts/build.mjs", "test": "node --test --test-isolation=none" },
-  "dependencies": { "pdf-lib": "^1.17.1", "xlsx": "^0.18.5" },
+  "dependencies": { "xlsx": "^0.18.5" },
   "engines": { "node": ">=20" }
 }

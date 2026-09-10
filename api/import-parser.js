@@ -71,7 +71,7 @@ function findItemHeader(rows) {
     const item = row.findIndex(value => ['MODELO', 'ITEM', 'PRODUTO'].includes(value) || value.includes('DESCRICAO'));
     const qtd = row.findIndex(value => ['QTD', 'QUANT', 'QUANT.'].includes(value) || value.includes('QUANTIDADE'));
     const grades = [];
-    row.forEach((value, index) => { if (/^(PP|P|M|G|GG|XG|XGG|EXG|G\d+|\d{1,3})$/.test(value)) grades.push(index); });
+    row.forEach((value, index) => { if (/^(PP|P|M|G|GG|XG|XGG|EXG|G\d+|\d{1,3})$/.test(value)) grades.push({ index, tamanho: value }); });
     if (item >= 0 && (qtd >= 0 || grades.length)) return { row: r, item, qtd, grades, manga: findColumn(row, ['MANGA']), tecido: multiLineColumn(rows, r, ['TECIDO', 'COMPOSICAO']), cor: findColumn(row, ['COR']) };
   }
   return null;
@@ -87,13 +87,52 @@ function parseItems(rawRows, shownRows) {
     const footer = /^(OBS|OBSERVACAO|SUBTOTAL|SUB TOTAL|TOTAL GERAL|TOTAL PEDIDO|TOTAL R\$|TOTAL|FRETE|DESCONTO|CONDICAO|TRANSPORTADORA)$/.test(normalized(item).replace(/[:.]/g, ''));
     if (footer) break;
     let qtd = header.qtd >= 0 ? numberValue(raw[header.qtd]) || numberValue(shown[header.qtd]) : 0;
-    if (!qtd) qtd = header.grades.reduce((sum, col) => sum + (numberValue(raw[col]) || numberValue(shown[col]) || 0), 0);
+    const grade = Object.fromEntries(header.grades.map(({index,tamanho}) => [tamanho, numberValue(raw[index]) || numberValue(shown[index]) || 0]).filter(([,value]) => value > 0));
+    if (!qtd) qtd = Object.values(grade).reduce((sum, value) => sum + value, 0);
     if (item && qtd > 0) {
       blanks = 0;
-      items.push({ item, manga: header.manga >= 0 ? clean(shown[header.manga]) : '', tecido: header.tecido >= 0 ? clean(shown[header.tecido]) : '', cor: header.cor >= 0 ? clean(shown[header.cor]) : '', qtd, ordemItem: items.length + 1, observacao: '' });
+      items.push({ item, manga: header.manga >= 0 ? clean(shown[header.manga]) : '', tecido: header.tecido >= 0 ? clean(shown[header.tecido]) : '', cor: header.cor >= 0 ? clean(shown[header.cor]) : '', grade, qtd, ordemItem: items.length + 1, observacao: '' });
     } else if (++blanks >= 8 && items.length) break;
   }
   return items;
+}
+
+const columnLetter = index => { let value=index+1, result=''; while(value){value--;result=String.fromCharCode(65+(value%26))+result;value=Math.floor(value/26);} return result; };
+const sheetRef = name => `'${String(name).replace(/'/g,"''")}'`;
+
+export function normalizeGrade(grade) {
+  if (!grade || typeof grade !== 'object' || Array.isArray(grade)) return {};
+  const result={};
+  for(const [rawSize,rawQuantity] of Object.entries(grade)){
+    const size=normalized(rawSize).replace(/[^A-Z0-9]/g,'').slice(0,8);
+    const quantity=numberValue(rawQuantity);
+    if(size&&quantity>0&&quantity<=1_000_000)result[size]=quantity;
+  }
+  return result;
+}
+
+export function financialClearRanges(rawRows, shownRows, sheetName) {
+  const header = findItemHeader(shownRows);
+  if (!header) return [];
+  const normalizedHeader = (shownRows[header.row] || []).map(normalized);
+  const financialColumns = normalizedHeader.flatMap((value,index) => /(?:\$|PRECO|VALOR|VLR|UNIT|TOTAL)/.test(value) ? [index] : []);
+  const maxRow = Math.max(rawRows.length, shownRows.length);
+  const ranges = financialColumns.map(index => `${sheetRef(sheetName)}!${columnLetter(index)}${header.row+2}:${columnLetter(index)}${maxRow}`);
+  let lastItemRow=header.row;
+  for(let r=header.row+1;r<shownRows.length;r++){
+    const hasItem=clean(shownRows[r]?.[header.item]);
+    const hasQuantity=(header.qtd>=0&&(numberValue(rawRows[r]?.[header.qtd])||numberValue(shownRows[r]?.[header.qtd])))||header.grades.some(({index})=>numberValue(rawRows[r]?.[index])||numberValue(shownRows[r]?.[index]));
+    if(hasItem&&hasQuantity)lastItemRow=r;
+  }
+  if(header.qtd>=0&&financialColumns.length&&lastItemRow+1<maxRow){
+    const lastFinancial=Math.max(...financialColumns);
+    ranges.push(`${sheetRef(sheetName)}!${columnLetter(header.qtd)}${lastItemRow+2}:${columnLetter(lastFinancial)}${maxRow}`);
+  }
+  for (let r=0;r<rawRows.length;r++) for (let c=0;c<(rawRows[r]||[]).length;c++) {
+    const value=rawRows[r][c];
+    if (typeof value==='string' && /^\s*R\$\s*[\d.,-]+\s*$/.test(value)) ranges.push(`${sheetRef(sheetName)}!${columnLetter(c)}${r+1}`);
+  }
+  return [...new Set(ranges)];
 }
 
 export function parseOrder(rawRows, shownRows, fileName = '') {
@@ -119,6 +158,8 @@ export function parseOrder(rawRows, shownRows, fileName = '') {
   const itens = parseItems(rawRows, shownRows);
   const delivery = date && prazoMax ? new Date(date.getFullYear(), date.getMonth(), date.getDate() + prazoMax) : null;
   const alertas = [];
+  const fileNumber=String(fileName).match(/^\s*(\d{3,10})\b/)?.[1]||'';
+  if(fileNumber&&numeroPedido&&fileNumber!==numeroPedido)alertas.push(`O nome do arquivo indica pedido ${fileNumber}, mas a planilha informa ${numeroPedido}. Confirme o número antes de importar.`);
   if (!numeroPedido) alertas.push('Número do pedido não identificado.');
   if (!date) alertas.push('Data de entrada não identificada.');
   if (!cliente) alertas.push('Cliente não identificado.');

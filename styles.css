@@ -655,6 +655,24 @@
     font-weight: 700;
   }
 
+  .grade-editor { grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 12px; }
+  .grade-editor summary, .detail-item summary { cursor: pointer; font-weight: 700; color: var(--text); }
+  .grade-editor summary { display: flex; justify-content: space-between; gap: 12px; }
+  .grade-editor summary strong { color: var(--muted); font-size: 12px; }
+  .grade-inputs { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .grade-inputs label { width: 76px; }
+  .grade-add { display: flex; gap: 8px; align-items: end; }
+  .grade-add .input { width: 100px; }
+
+  .detail-items { display: grid; gap: 10px; }
+  .detail-item { border: 1px solid var(--border); border-radius: 12px; background: #fff; overflow: hidden; }
+  .detail-item summary { display: flex; justify-content: space-between; gap: 14px; padding: 13px 14px; }
+  .detail-item summary strong { color: var(--primary); white-space: nowrap; }
+  .detail-item-body { padding: 0 14px 14px; border-top: 1px solid var(--border); }
+  .grade-view { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .grade-view span { display: grid; min-width: 70px; gap: 2px; padding: 8px 10px; border-radius: 9px; background: #eef5f1; text-align: center; font-size: 12px; }
+  .grade-view span strong { color: var(--primary); font-size: 14px; }
+
   .summary-bar {
     margin-top: 22px;
     padding: 18px 20px;
@@ -940,6 +958,9 @@
       align-items: flex-start;
       flex-direction: column;
     }
+
+    .grade-add, .grade-add .input, .grade-add .btn { width: 100%; }
+    .detail-item summary { align-items: flex-start; flex-direction: column; }
 
     .summary-bar {
       align-items: flex-start;

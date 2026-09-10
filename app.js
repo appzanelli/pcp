@@ -373,7 +373,7 @@ let estado = {
     if (!estado.excel) return;
 
     try {
-      exibirLoading('Lendo a planilha e gerando o PDF automaticamente...');
+      exibirLoading('Lendo grades, removendo valores e gerando o PDF visual...');
 
       const base64 = await arquivoParaBase64(estado.excel);
 
@@ -416,7 +416,7 @@ let estado = {
       : '';
 
     document.getElementById('statusPdfAutomatico').innerHTML = dados.pdfGerado
-      ? `<strong>PDF gerado automaticamente.</strong><br>${escapeHtml(dados.nomePdfGerado || '')}`
+      ? `<strong>PDF visual sanitizado gerado.</strong><br>Imagens e observações preservadas; valores financeiros removidos.<br>${escapeHtml(dados.nomePdfGerado || '')}`
       : `<strong>PDF automático não gerado.</strong>`;
 
     renderizarItens();
@@ -439,13 +439,52 @@ let estado = {
         ${campoItem('Cor', `cor_${index}`, item.cor)}
         <label>
           <span>Qtd.</span>
-          <input class="input" type="number" min="0" value="${Number(item.qtd || 0)}" oninput="atualizarItem(${index}, 'qtd', this.value)">
+          <input id="qtd_${index}" class="input" type="number" min="0" value="${Number(item.qtd || 0)}" oninput="atualizarItem(${index}, 'qtd', this.value)" ${Object.keys(item.grade || {}).length ? 'readonly title="Quantidade calculada pela grade"' : ''}>
         </label>
         <button class="btn btn-danger" onclick="removerItem(${index})">Excluir</button>
+        ${renderizarEditorGrade(item, index)}
       </div>
     `).join('');
 
     atualizarResumoItens();
+  }
+
+  function entradasGrade(grade) {
+    const ordem = ['PP', 'P', 'M', 'G', 'GG', 'XG', 'XGG', 'EXG', 'G1', 'G2', 'G3', 'G4'];
+    return Object.entries(grade || {}).sort(([a], [b]) => {
+      const ia = ordem.indexOf(a); const ib = ordem.indexOf(b);
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib) || a.localeCompare(b, 'pt-BR', { numeric: true });
+    });
+  }
+
+  function renderizarEditorGrade(item, index) {
+    const grade = item.grade || {};
+    const tamanhos = Object.keys(grade).length ? entradasGrade(grade) : [];
+    return `<details class="grade-editor" ${tamanhos.length ? 'open' : ''}>
+      <summary>Grade de tamanhos <strong>${tamanhos.length ? `${tamanhos.length} tamanhos` : 'não informada'}</strong></summary>
+      <div class="grade-inputs">
+        ${tamanhos.map(([tamanho, quantidade]) => `<label><span>${escapeHtml(tamanho)}</span><input class="input" type="number" min="0" value="${Number(quantidade || 0)}" oninput="atualizarGrade(${index}, decodeURIComponent('${encodeInlineArg(tamanho)}'), this.value)"></label>`).join('')}
+        <div class="grade-add"><input id="novoTamanho_${index}" class="input" type="text" maxlength="8" placeholder="Ex.: G2"><button class="btn btn-light" onclick="adicionarTamanhoGrade(${index})">Adicionar tamanho</button></div>
+      </div>
+    </details>`;
+  }
+
+  function atualizarGrade(index, tamanho, valor) {
+    const item = estado.itens[index]; if (!item) return;
+    item.grade = item.grade || {};
+    item.grade[tamanho] = Math.max(0, Number(valor || 0));
+    item.qtd = Object.values(item.grade).reduce((soma, qtd) => soma + Number(qtd || 0), 0);
+    const campoQtd = document.getElementById(`qtd_${index}`); if (campoQtd) campoQtd.value = item.qtd;
+    atualizarResumoItens();
+  }
+
+  function adicionarTamanhoGrade(index) {
+    const campo = document.getElementById(`novoTamanho_${index}`);
+    const tamanho = String(campo?.value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!tamanho) { mostrarToast('Informe um tamanho válido.'); return; }
+    estado.itens[index].grade = estado.itens[index].grade || {};
+    if (!(tamanho in estado.itens[index].grade)) estado.itens[index].grade[tamanho] = 0;
+    renderizarItens();
   }
 
   function campoItem(rotulo, id, valor) {
@@ -477,6 +516,7 @@ let estado = {
       manga: '',
       tecido: '',
       cor: '',
+      grade: {},
       qtd: 0,
       observacao: ''
     });
@@ -1170,36 +1210,26 @@ let estado = {
 
           <h3 style="margin-top:24px">Itens</h3>
 
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th>Tecido</th>
-                  <th>Qtd.</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                ${
-                  itens.length
-                    ? itens.map(item => `
-                      <tr>
-                        <td>${escapeHtml(item.item || '')}</td>
-                        <td>${escapeHtml(item.tecido || '')}</td>
-                        <td>${Number(item.qtd || 0).toLocaleString('pt-BR')}</td>
-                      </tr>
-                    `).join('')
-                    : '<tr><td colspan="3">Carregando itens...</td></tr>'
-                }
-              </tbody>
-            </table>
+          <div class="detail-items">
+            ${itens.length ? itens.map(renderizarItemDetalhe).join('') : '<p>Carregando itens...</p>'}
           </div>
         </div>
       </div>
     `;
 
     document.getElementById('modalDetalhe').classList.remove('hidden');
+  }
+
+  function renderizarItemDetalhe(item) {
+    const grade = entradasGrade(item.grade || {}).filter(([, quantidade]) => Number(quantidade) > 0);
+    return `<details class="detail-item">
+      <summary><span>${escapeHtml(item.item || 'Item sem descrição')}</span><strong>${Number(item.qtd || 0).toLocaleString('pt-BR')} peças</strong></summary>
+      <div class="detail-item-body">
+        <p><strong>Manga:</strong> ${escapeHtml(item.manga || '-')} · <strong>Tecido:</strong> ${escapeHtml(item.tecido || '-')} · <strong>Cor:</strong> ${escapeHtml(item.cor || '-')}</p>
+        <div class="grade-view">${grade.length ? grade.map(([tamanho, quantidade]) => `<span><strong>${escapeHtml(tamanho)}</strong>${Number(quantidade).toLocaleString('pt-BR')} peças</span>`).join('') : '<em>Grade não informada.</em>'}</div>
+        ${item.observacao ? `<p><strong>Observação:</strong> ${escapeHtml(item.observacao)}</p>` : ''}
+      </div>
+    </details>`;
   }
 
   function renderizarTimeline(etapa, gargalo) {

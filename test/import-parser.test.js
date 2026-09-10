@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseOrder } from '../api/import-parser.js';
+import { financialClearRanges, normalizeGrade, parseOrder } from '../api/import-parser.js';
 
 test('interpreta cabeçalho, grade e ignora campos financeiros', () => {
   const rows = [
@@ -18,8 +18,23 @@ test('interpreta cabeçalho, grade e ignora campos financeiros', () => {
   assert.equal(result.prazoMin, 30);
   assert.equal(result.prazoMax, 45);
   assert.equal(result.qtdTotal, 9);
-  assert.deepEqual(result.itens[0], { item: 'Camiseta Polo', manga: 'CURTA', tecido: 'PIQUET', cor: 'AZUL', qtd: 9, ordemItem: 1, observacao: '' });
+  assert.deepEqual(result.itens[0], { item: 'Camiseta Polo', manga: 'CURTA', tecido: 'PIQUET', cor: 'AZUL', grade:{P:2,M:3,G:4}, qtd: 9, ordemItem: 1, observacao: '' });
   assert.equal(JSON.stringify(result).includes('999'), false);
+});
+
+test('identifica faixas financeiras para remoção antes do PDF', () => {
+  const rows=[['ITEM','P','M','QUANT.','$ UNIT.','TOTAL'],['Polo',2,3,5,72,360]];
+  assert.deepEqual(financialClearRanges(rows,rows,'pedido'),["'pedido'!E2:E2","'pedido'!F2:F2"]);
+});
+
+test('alerta quando número interno diverge do nome do arquivo',()=>{
+  const rows=[['PEDIDO','6486'],['CLIENTE','Teste'],['DATA','10/09/2026'],['PRAZO','20 DIAS'],['ITEM','P','QTD','$ UNIT.'],['Polo',2,2,50]];
+  const result=parseOrder(rows,rows,'6578 CLIENTE.xlsx');
+  assert.match(result.alertas.join(' '),/6578.*6486/);
+});
+
+test('normaliza a grade recebida do navegador',()=>{
+  assert.deepEqual(normalizeGrade({g:'40',' GG ':5,XGG:'10',invalido:-2}),{G:40,GG:5,XGG:10});
 });
 
 test('usa quantidade direta e aceita número no nome do arquivo', () => {

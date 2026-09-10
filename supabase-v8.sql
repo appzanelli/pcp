@@ -1,5 +1,6 @@
 begin;
 alter table public.pedidos add column if not exists numero_corte text;
+alter table public.pedidos_itens add column if not exists grade jsonb not null default '{}'::jsonb;
 alter table public.pedidos_etapas add column if not exists costura_externa boolean not null default false;
 update public.pedidos_etapas set costura_externa = false where etapa <> 'COSTURA' or costura_externa is null;
 
@@ -41,12 +42,12 @@ begin
 
   delete from public.pedidos_itens where numero_pedido = v_pedido.numero_pedido;
   insert into public.pedidos_itens
-    (id_item, pedido_id, id_pedido, numero_pedido, item, manga, tecido, cor, qtd, ordem_item, observacao)
+    (id_item, pedido_id, id_pedido, numero_pedido, item, manga, tecido, cor, grade, qtd, ordem_item, observacao)
   select 'ITEM-' || upper(substr(gen_random_uuid()::text, 1, 8)), v_pedido.id,
     v_pedido.id_pedido, v_pedido.numero_pedido, x.item, x.manga, x.tecido,
-    x.cor, x.qtd, x.ordem_item, x.observacao
+    x.cor, coalesce(x.grade, '{}'::jsonb), x.qtd, x.ordem_item, x.observacao
   from jsonb_to_recordset(p_itens) as x(
-    item text, manga text, tecido text, cor text, qtd numeric,
+    item text, manga text, tecido text, cor text, grade jsonb, qtd numeric,
     ordem_item integer, observacao text
   );
 

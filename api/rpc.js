@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import { financialClearRanges, normalizeGrade, parseOrder } from './import-parser.js';
 import { dayDiff, todayISO, validateStageDates, workflowSummary } from './workflow.js';
+import { diagnoseGoogle, GoogleIntegrationError, googleJson, googleRequest, googleToken } from '../lib/google-drive.js';
 
 const STAGES = ['COMPRA TECIDO/RISCO','ENFESTO/CORTE','ETIQUETAGEM/SEP.BORDADO','BORDADO/PERSONALIZAÇÃO','COSTURA','ACAB./PASSADORIA','EMBALAGEM'];
 const PERMS = {
@@ -21,11 +22,14 @@ const del=(table,q)=>sb('DELETE',`${table}?${q}`,null,'return=minimal');
 const rpc=(name,payload)=>sb('POST',`rpc/${name}`,payload);
 const eq=v=>`eq.${encodeURIComponent(String(v))}`;
 const tokenOf=a=>a?.accessToken||a?.auth?.accessToken||a?.auth?.auth?.accessToken||'';
-async function currentUser(auth, permission='VER_DADOS') {
+async function readAuthUser(auth) {
   const token=tokenOf(auth); if(!token) throw new Error('Sessão expirada. Faça login novamente.');
   const response=await fetch(`${env('SUPABASE_URL')}/auth/v1/user`,{headers:sbHeaders(env('SUPABASE_PUBLISHABLE_KEY')).Authorization?{apikey:env('SUPABASE_PUBLISHABLE_KEY'),Authorization:`Bearer ${token}`}:{}});
   if(!response.ok) throw new Error('Sessão inválida ou expirada.');
-  const authUser=await response.json(); const email=String(authUser.email||'').toLowerCase();
+  return response.json();
+}
+async function currentUser(auth, permission='VER_DADOS') {
+  const authUser=await readAuthUser(auth); const email=String(authUser.email||'').toLowerCase();
   let profiles=await get('usuarios_perfis',`select=*&or=(auth_user_id.eq.${authUser.id},email.eq.${encodeURIComponent(email)})&limit=1`);
   if(!profiles.length) {
     const any=await get('usuarios_perfis','select=id&limit=1');
@@ -38,6 +42,18 @@ async function currentUser(auth, permission='VER_DADOS') {
   return user;
 }
 const permissions=profile=>Object.fromEntries(Object.entries(PERMS).map(([k,v])=>[k,v.includes(profile)]));
+
+async function diagnoseGoogleForAdmin(auth) {
+  const { id } = await readAuthUser(auth);
+  if (!id || id !== process.env.GOOGLE_DIAGNOSTIC_ADMIN_ID?.trim()) {
+    throw new Error('Sem permissão para diagnosticar a integração Google.');
+  }
+  const [profile] = await get('usuarios_perfis', `select=perfil,ativo&auth_user_id=${eq(id)}&limit=1`);
+  if (profile?.ativo !== true || String(profile.perfil).toUpperCase() !== 'ADMIN') {
+    throw new Error('Sem permissão para diagnosticar a integração Google.');
+  }
+  return diagnoseGoogle();
+}
 const isoBR=value=>value&&/^\d{4}-\d{2}-\d{2}/.test(value)?`${value.slice(8,10)}/${value.slice(5,7)}/${value.slice(0,4)}`:'';
 const brISO=value=>{ const m=String(value||'').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); return m?`${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`:(/^\d{4}-\d{2}-\d{2}$/.test(value)?value:null); };
 const days=(a,b=todayISO())=>a?(dayDiff(a,typeof b==='string'?b:todayISO('America/Sao_Paulo',b))??''):'';
@@ -52,18 +68,109 @@ async function initial(auth) {
   const active=cards.filter(c=>!c.concluido); return {appName:'ZANELLI | CENTRAL DE PEDIDOS',version:'7.0.0 - WEB',pedidos:enriched,recentes:enriched.slice(0,6),etapas:rawStages.map(normStage),kanban:{columns,colunas:columns,cards},metricas:{totalPedidos:orders.length,qtdTotal:active.reduce((s,c)=>s+c.qtdTotal,0),atrasados:active.filter(c=>c.diasParaEntrega!==''&&c.diasParaEntrega<0).length,pedidosParados:active.filter(c=>c.diasParado>=3).length},gargalos:columns.map(x=>({etapa:x.etapa,quantidade:x.cards.length,parados:x.cards.filter(c=>c.diasParado>=3).length,atrasados:x.cards.filter(c=>c.diasParaEntrega!==''&&c.diasParaEntrega<0).length})),usuario:user,permissoes:permissions(user.perfil)};
 }
 async function login(payload) { const response=await fetch(`${env('SUPABASE_URL')}/auth/v1/token?grant_type=password`,{method:'POST',headers:sbHeaders(env('SUPABASE_PUBLISHABLE_KEY')),body:JSON.stringify({email:payload.email,password:payload.senha})}); const data=await response.json(); if(!response.ok) throw new Error(data.msg||data.error_description||'Falha no login.'); const info=await currentUser({accessToken:data.access_token}); return {sucesso:true,accessToken:data.access_token,refreshToken:data.refresh_token||'',expiresIn:data.expires_in||3600,email:payload.email,usuario:info,permissoes:permissions(info.perfil)}; }
-async function googleToken(){const body=new URLSearchParams({client_id:env('GOOGLE_CLIENT_ID'),client_secret:env('GOOGLE_CLIENT_SECRET'),refresh_token:env('GOOGLE_REFRESH_TOKEN'),grant_type:'refresh_token'});const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});const d=await r.json();if(!r.ok)throw new Error(`Google OAuth: ${d.error_description||d.error}`);return d.access_token;}
-async function uploadPdf(bytes,name){const token=await googleToken(),boundary='zanelli_'+Date.now();const meta=JSON.stringify({name,parents:[env('GOOGLE_DRIVE_FOLDER_ID')]});const body=Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/pdf\r\n\r\n`),Buffer.from(bytes),Buffer.from(`\r\n--${boundary}--`)]);const r=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':`multipart/related; boundary=${boundary}`},body});const d=await r.json();if(!r.ok)throw new Error(`Google Drive: ${d.error?.message||r.status}`);return d;}
-async function deleteDriveFile(token,id){if(!id)return;let response;for(let attempt=0;attempt<2;attempt++){response=await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}`,{method:'DELETE',headers:{Authorization:`Bearer ${token}`}}).catch(()=>null);if(response?.ok||response?.status===404)return;}throw new Error('Falha ao excluir a planilha temporária sanitizada do Google Drive.');}
-async function createSanitizedPdf(buffer,sheetName,ranges,number){const token=await googleToken(),boundary='zanelli_xlsx_'+Date.now();let sheetId='';try{const meta=JSON.stringify({name:`TMP_SANITIZAR_${number||Date.now()}`,mimeType:'application/vnd.google-apps.spreadsheet'});const body=Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n`),buffer,Buffer.from(`\r\n--${boundary}--`)]);const createdResponse=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':`multipart/related; boundary=${boundary}`},body});const created=await createdResponse.json();if(!createdResponse.ok)throw new Error(`Google Drive: ${created.error?.message||createdResponse.status}`);sheetId=created.id;const clearResponse=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchClear`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({ranges})});if(!clearResponse.ok){const error=await clearResponse.json().catch(()=>({}));throw new Error(`Não foi possível remover os valores financeiros: ${error.error?.message||clearResponse.status}`);}const metadataResponse=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties`,{headers:{Authorization:`Bearer ${token}`}});const metadata=await metadataResponse.json();if(!metadataResponse.ok)throw new Error(`Google Sheets: ${metadata.error?.message||metadataResponse.status}`);const selected=metadata.sheets?.find(sheet=>String(sheet.properties?.title).toUpperCase()===String(sheetName).toUpperCase())||metadata.sheets?.[0];if(!selected)throw new Error('A aba do pedido não foi encontrada após a conversão.');const exportUrl=new URL(`https://docs.google.com/spreadsheets/d/${sheetId}/export`);Object.entries({format:'pdf',gid:selected.properties.sheetId,size:'A4',portrait:'false',fitw:'true',sheetnames:'false',printtitle:'false',pagenumbers:'false',gridlines:'false',fzr:'false'}).forEach(([key,value])=>exportUrl.searchParams.set(key,value));const pdfResponse=await fetch(exportUrl,{headers:{Authorization:`Bearer ${token}`}});if(!pdfResponse.ok)throw new Error(`Falha ao gerar PDF visual: ${pdfResponse.status}`);return await uploadPdf(Buffer.from(await pdfResponse.arrayBuffer()),`TMP_PEDIDO_${number||Date.now()}.pdf`);}finally{await deleteDriveFile(token,sheetId);}}
+const googleHeaders = token => ({ Authorization: `Bearer ${token}` });
+
+function multipartFile(metadata, bytes, contentType) {
+  const boundary = `zanelli_${Date.now()}`;
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${contentType}\r\n\r\n`),
+    bytes,
+    Buffer.from(`\r\n--${boundary}--`)
+  ]);
+  return { body, contentType: `multipart/related; boundary=${boundary}` };
+}
+
+function uploadDriveFile(token, stage, metadata, bytes, mimeType, fields) {
+  const { body, contentType } = multipartFile(metadata, bytes, mimeType);
+  return googleJson(stage, `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=${fields}`, {
+    method: 'POST', headers: { ...googleHeaders(token), 'Content-Type': contentType }, body
+  });
+}
+
+async function deleteDriveFile(token, id) {
+  if (!id) return;
+  const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}`;
+  const options = { method: 'DELETE', headers: googleHeaders(token) };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await googleRequest('drive_cleanup', url, options, { allowNotFound: true });
+      return;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
+  }
+}
+
+async function createSanitizedPdf(buffer, sheetName, ranges, number) {
+  if (!process.env.GOOGLE_DRIVE_FOLDER_ID?.trim()) {
+    throw new GoogleIntegrationError('drive_upload_pdf', 'missing_configuration');
+  }
+  const token = await googleToken();
+  const headers = googleHeaders(token);
+  const suffix = number || Date.now();
+  const created = await uploadDriveFile(token, 'drive_convert', {
+    name: `TMP_SANITIZAR_${suffix}`, mimeType: 'application/vnd.google-apps.spreadsheet'
+  }, buffer, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'id');
+  if (!created.id) throw new GoogleIntegrationError('drive_convert', 'invalid_response');
+  const sheetId = encodeURIComponent(created.id);
+  let uploaded;
+  try {
+    const sheetsUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`;
+    await googleRequest('sheets_clear', `${sheetsUrl}/values:batchClear`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ ranges })
+    });
+    const metadata = await googleJson('sheets_metadata', `${sheetsUrl}?fields=sheets.properties`, { headers });
+    const selected = metadata.sheets?.find(sheet => String(sheet.properties?.title).toUpperCase() === String(sheetName).toUpperCase()) || metadata.sheets?.[0];
+    if (!selected) throw new Error('A aba do pedido não foi encontrada após a conversão.');
+    const exportUrl = new URL(`https://docs.google.com/spreadsheets/d/${sheetId}/export`);
+    exportUrl.search = new URLSearchParams({
+      format: 'pdf', gid: selected.properties.sheetId, size: 'A4', portrait: 'false',
+      fitw: 'true', sheetnames: 'false', printtitle: 'false', pagenumbers: 'false', gridlines: 'false', fzr: 'false'
+    });
+    const pdf = await googleRequest('sheets_export_pdf', exportUrl, { headers });
+    const bytes = await pdf.arrayBuffer().catch(() => {
+      throw new GoogleIntegrationError('sheets_export_pdf', 'invalid_response', pdf.status);
+    });
+    uploaded = await uploadDriveFile(token, 'drive_upload_pdf', {
+      name: `TMP_PEDIDO_${suffix}.pdf`, parents: [process.env.GOOGLE_DRIVE_FOLDER_ID]
+    }, Buffer.from(bytes), 'application/pdf', 'id,webViewLink');
+    if (!uploaded.id) throw new GoogleIntegrationError('drive_upload_pdf', 'invalid_response');
+  } catch (error) {
+    await deleteDriveFile(token, created.id).catch(() => {});
+    throw error;
+  }
+  await deleteDriveFile(token, created.id);
+  return uploaded;
+}
 async function analyze(payload){await currentUser(payload.auth,'IMPORTAR_PEDIDO');const buffer=Buffer.from(payload.base64,'base64');if(buffer.length>4_000_000)throw new Error('Na versão web, o Excel deve ter no máximo 4 MB.');const wb=XLSX.read(buffer,{cellDates:true,cellStyles:true}),sheetName=wb.SheetNames.find(n=>n.toUpperCase()==='PEDIDO')||wb.SheetNames[0],ws=wb.Sheets[sheetName];const rawRows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''}),shownRows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''});const parsed=parseOrder(rawRows,shownRows,payload.nomeArquivo),ranges=financialClearRanges(rawRows,shownRows,sheetName,ws);if(!ranges.length)throw new Error('Não foi possível identificar com segurança as colunas financeiras. Revise o modelo da planilha.');const uploaded=await createSanitizedPdf(buffer,sheetName,ranges,parsed.numeroPedido);return{...parsed,tempPdfId:uploaded.id,nomePdfGerado:`PEDIDO ${parsed.numeroPedido}.pdf`,pdfGerado:true,pdfSanitizado:true};}
 async function audit(user,acao,tabela,id,numero,antes,depois,obs=''){try{await post('auditoria',{auth_user_id:user.authUserId,usuario_email:user.email,usuario_nome:user.nome,perfil:user.perfil,acao,tabela,registro_id:String(id||''),numero_pedido:String(numero||''),antes_json:antes,depois_json:depois,observacao:obs},'return=minimal');}catch(e){console.error(e);}}
-async function driveFinalize(id,name){const token=await googleToken();const r=await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,webViewLink`,{method:'PATCH',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({name})});const d=await r.json();if(!r.ok)throw new Error(`Google Drive: ${d.error?.message||r.status}`);return d;}
+async function driveFinalize(id, name) {
+  const token = await googleToken();
+  return googleJson('drive_finalize', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,webViewLink`, {
+    method: 'PATCH', headers: { ...googleHeaders(token), 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
+  });
+}
 async function saveOrder(p){const user=await currentUser(p.auth,'IMPORTAR_PEDIDO'),number=String(p.numeroPedido||'').trim(),items=p.itens||[];if(!number||!p.cliente||!brISO(p.dataEntrada)||!Number(p.prazoMax)||!items.length||!p.tempPdfId)throw new Error('Revise número, cliente, data, prazo, itens e PDF.');const found=(await get('pedidos',`select=*&numero_pedido=${eq(number)}&limit=1`))[0];if(found&&!p.atualizarExistente)return{sucesso:false,duplicado:true,mensagem:`O pedido ${number} já está cadastrado. Deseja atualizar?`};const safeItems=items.map((x,i)=>{const grade=normalizeGrade(x.grade),gradeTotal=Object.values(grade).reduce((sum,value)=>sum+value,0),qtd=gradeTotal||Number(x.qtd||0);if(!String(x.item||'').trim()||!Number.isFinite(qtd)||qtd<=0)throw new Error(`Revise a descrição e a quantidade do item ${i+1}.`);return{item:String(x.item).trim(),manga:String(x.manga||''),tecido:String(x.tecido||''),cor:String(x.cor||''),grade,qtd,ordem_item:i+1,observacao:String(x.observacao||'')}});const start=new Date(`${brISO(p.dataEntrada)}T12:00:00`);start.setDate(start.getDate()+Number(p.prazoMax));const pdf=await driveFinalize(p.tempPdfId,`PEDIDO ${number} - ${String(p.cliente).replace(/[\\/:*?"<>|#%]/g,'-')}.pdf`);const data={id_pedido:number,numero_pedido:number,data_entrada:brISO(p.dataEntrada),cliente:String(p.cliente).trim(),prazo_original:String(p.prazoOriginal||''),prazo_min:Number(p.prazoMin||p.prazoMax),prazo_max:Number(p.prazoMax),data_entrega:start.toISOString().slice(0,10),qtd_itens:safeItems.length,qtd_total:safeItems.reduce((s,x)=>s+x.qtd,0),link_pdf:pdf.webViewLink,data_importacao:new Date().toISOString(),usuario:user.email,status:'IMPORTADO'};const order=await rpc('importar_pedido_atomico',{p_pedido:data,p_itens:safeItems,p_etapas:STAGES.map((etapa,i)=>({etapa,ordem_etapa:i+1}))});await audit(user,found?'ATUALIZAR_PEDIDO':'IMPORTAR_PEDIDO','pedidos',order.id,number,found||null,order);return{...(await initial(p.auth)),mensagem:`Pedido ${number} salvo com sucesso.`};}
 async function quickStage(p,any=false){const permission=any?'ALTERAR_QUALQUER_ETAPA':'EDITAR_ETAPA',user=await currentUser(p.auth,permission),input=any?(p.etapa||{}):p,id=input.id||p.idEtapaDb,before=(await get('pedidos_etapas',`select=*&id=${eq(id)}&limit=1`))[0];if(!before)throw new Error('Etapa não encontrada.');const all=(await get('pedidos_etapas',`select=*&numero_pedido=${eq(before.numero_pedido)}&order=ordem_etapa.asc`)).map(normStage),now=stageNow(all);if(!any&&user.perfil==='PRODUCAO'&&String(now.etapaObj?.id)!==String(id))throw new Error('Produção pode alterar somente a etapa atual.');if(Number(before.ordem_etapa)===1&&user.perfil!=='ADMIN')throw new Error('COMPRA TECIDO/RISCO é exclusiva de ADMIN.');let begin=brISO(input.dataInicio),end=brISO(input.dataConclusao);if(!any&&p.concluir){begin=begin||todayISO();end=end||todayISO();}if(input.dataInicio&&!begin||input.dataConclusao&&!end)throw new Error('Data inválida.');validateStageDates(begin,end);const updated=(await patch('pedidos_etapas',`id=${eq(id)}`,{data_inicio:begin,data_conclusao:end,responsavel:String(input.responsavel||'').trim(),observacao:String(input.observacao||'').trim(),costura_externa:before.etapa==='COSTURA'?Boolean(input.costuraExterna):false,status_etapa:end?'CONCLUÍDA':begin?'EM ANDAMENTO':'PENDENTE',dias_em_aberto:begin?days(begin,end||todayISO()):null,data_atualizacao:new Date().toISOString(),usuario_atualizacao:user.email}))[0];if(Number(before.ordem_etapa)===1){const cut=String(input.numeroCorte||p.numeroCorte||'').trim();if(!cut)throw new Error('Informe o Nº CORTE.');await patch('pedidos',`numero_pedido=${eq(before.numero_pedido)}`,{numero_corte:cut},'return=minimal');}await audit(user,any?'EDITAR_QUALQUER_ETAPA':'EDITAR_ETAPA','pedidos_etapas',id,before.numero_pedido,before,updated);const order=(await get('pedidos',`select=*&numero_pedido=${eq(before.numero_pedido)}&limit=1`))[0],stages=await get('pedidos_etapas',`select=*&numero_pedido=${eq(before.numero_pedido)}`);return{sucesso:true,mensagem:'Etapa salva com sucesso.',etapa:normStage(updated),card:card(order,stages)};}
 async function detail(p){await currentUser(p.auth);const order=(await get('pedidos',`select=*&numero_pedido=${eq(p.numeroPedido)}&limit=1`))[0];if(!order)throw new Error('Pedido não encontrado.');const [stages,items]=await Promise.all([get('pedidos_etapas',`select=*&numero_pedido=${eq(p.numeroPedido)}&order=ordem_etapa.asc`),get('pedidos_itens',`select=*&numero_pedido=${eq(p.numeroPedido)}&order=ordem_item.asc`)]);const summary=workflowSummary(stages.map(normStage));return{pedido:normOrder(order),etapas:summary.etapas,leadTimeDias:summary.leadTimeDias,somaEtapasDias:summary.somaEtapasDias,gargalo:summary.gargalo,costuraExterna:summary.costuraExterna,itens:items.map(x=>({id:x.id,idItem:x.id_item,numeroPedido:x.numero_pedido,item:x.item,manga:x.manga||'',tecido:x.tecido||'',cor:x.cor||'',grade:x.grade&&typeof x.grade==='object'?x.grade:{},qtd:Number(x.qtd||0),ordemItem:x.ordem_item,observacao:x.observacao||''})),etapaAtual:stageNow(summary.etapas)};}
 async function authAdmin(method,path,payload){const key=env('SUPABASE_SERVICE_ROLE_KEY'),r=await fetch(`${env('SUPABASE_URL')}/auth/v1/admin/${path}`,{method,headers:sbHeaders(key),body:payload?JSON.stringify(payload):undefined}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.msg||d.message||'Erro no Supabase Auth.');return d;}
 async function saveUser(p,createAuth=false){const admin=await currentUser(p.auth,'GERENCIAR_USUARIOS'),u=p.usuario||{},email=String(u.email||'').trim().toLowerCase(),profile=String(u.perfil||'').toUpperCase();if(!email||!u.nome||!['ADMIN','PCP','PRODUCAO','CONSULTA'].includes(profile))throw new Error('Dados do usuário inválidos.');let authId='';if(createAuth){if(String(u.senha||'').length<6)throw new Error('A senha deve ter pelo menos 6 caracteres.');authId=(await authAdmin('POST','users',{email,password:u.senha,email_confirm:true,user_metadata:{name:u.nome}})).id;}const data={email,nome:String(u.nome).trim(),perfil:profile,ativo:u.ativo!==false,...(authId?{auth_user_id:authId}:{})};let saved;if(u.id)saved=(await patch('usuarios_perfis',`id=${eq(u.id)}`,data))[0];else{const old=(await get('usuarios_perfis',`select=*&email=${eq(email)}&limit=1`))[0];saved=old?(await patch('usuarios_perfis',`id=${eq(old.id)}`,data))[0]:(await post('usuarios_perfis',data))[0];}await audit(admin,createAuth?'CRIAR_USUARIO_AUTH':u.id?'EDITAR_USUARIO':'CRIAR_USUARIO','usuarios_perfis',saved.id,'',null,saved);return{sucesso:true,mensagem:'Usuário salvo com sucesso.',usuario:saved,usuarios:await action('listarUsuariosSistema',[p.auth])};}
 async function action(name,args){const p=args[0]||{};if(name==='loginSupabaseSistema')return login(p);if(name==='obterUsuarioLogado'){const u=await currentUser(p);return{sucesso:true,usuario:u,permissoes:permissions(u.perfil)}}if(name==='obterDadosIniciais')return initial(p);if(name==='testeConexaoSupabase'){const u=await currentUser(p);return{sucesso:true,mensagem:`Conexão OK. Usuário: ${u.nome} (${u.perfil}).`}}if(name==='analisarArquivoExcel')return analyze(p);if(name==='salvarPedido')return saveOrder(p);if(name==='obterDetalhePedidoCompleto')return detail(p);if(name==='obterEtapaAtualPedidoRapido'){const d=await detail(p),now=stageNow(d.etapas),raw=await get('pedidos_etapas',`select=*&numero_pedido=${eq(p.numeroPedido)}`),order=(await get('pedidos',`select=*&numero_pedido=${eq(p.numeroPedido)}&limit=1`))[0];return{pedido:d.pedido,etapa:now.etapaObj,card:card(order,raw)}}if(name==='salvarEtapaAtualRapido')return quickStage(p);if(name==='editarQualquerEtapaAdmin')return quickStage(p,true);if(name==='listarUsuariosSistema'){await currentUser(p,'GERENCIAR_USUARIOS');return(await get('usuarios_perfis','select=*&order=nome.asc')).map(x=>({id:x.id,authUserId:x.auth_user_id||'',email:x.email,nome:x.nome,perfil:x.perfil,ativo:Boolean(x.ativo),ultimoAcesso:x.ultimo_acesso||'',criadoEm:x.criado_em||''}))}if(name==='salvarUsuarioSistema')return saveUser(p);if(name==='criarUsuarioAuthESistema')return saveUser(p,true);if(name==='alterarSenhaUsuarioAuth'){const u=await currentUser(p.auth,'GERENCIAR_USUARIOS');if(String(p.novaSenha||'').length<6)throw new Error('Senha muito curta.');await authAdmin('PUT',`users/${p.authUserId}`,{password:p.novaSenha});await audit(u,'ALTERAR_SENHA_USUARIO','auth.users',p.authUserId,'',null,null);return{sucesso:true,mensagem:'Senha alterada.'}}if(name==='editarPedidoAdmin'){const u=await currentUser(p.auth,'EDITAR_PEDIDO'),d=p.pedido,b=(await get('pedidos',`select=*&numero_pedido=${eq(d.numeroPedido)}&limit=1`))[0],after=(await patch('pedidos',`id=${eq(b.id)}`,{cliente:d.cliente,data_entrada:brISO(d.dataEntrada),data_entrega:brISO(d.dataEntrega),prazo_original:d.prazoOriginal,qtd_total:Number(d.qtdTotal||0)}))[0];await audit(u,'EDITAR_PEDIDO','pedidos',b.id,b.numero_pedido,b,after);return{...(await initial(p.auth)),mensagem:'Pedido editado.'}}if(name==='apagarPedidoAdmin'){const u=await currentUser(p.auth,'APAGAR_PEDIDO'),b=(await get('pedidos',`select=*&numero_pedido=${eq(p.numeroPedido)}&limit=1`))[0],a=(await patch('pedidos',`id=${eq(b.id)}`,{ativo:false,status:'EXCLUÍDO',excluido_em:new Date().toISOString(),excluido_por:u.authUserId,motivo_exclusao:p.motivo}))[0];await audit(u,'EXCLUIR_PEDIDO_LOGICO','pedidos',b.id,b.numero_pedido,b,a,p.motivo);return{...(await initial(p.auth)),mensagem:'Pedido apagado.'}}throw new Error(`Operação ainda não migrada: ${name}`);}
-export default async function handler(req,res){if(req.method!=='POST')return res.status(405).json({error:'Método não permitido.'});try{return res.status(200).json({result:await action(req.body?.action,req.body?.args||[])});}catch(error){console.error(error);return res.status(400).json({error:error.message||'Erro interno.'});}}
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Método não permitido.' });
+  try {
+    const { action: name, args = [] } = req.body || {};
+    if (name === 'diagnosticarIntegracaoGoogle') {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ result: await diagnoseGoogleForAdmin(args?.[0]?.auth) });
+    }
+    return res.status(200).json({ result: await action(name, args || []) });
+  } catch (error) {
+    if (error instanceof GoogleIntegrationError) {
+      return res.status(error.status).json({ error: error.message, correlationId: error.details.correlationId });
+    }
+    console.error(error);
+    return res.status(400).json({ error: error.message || 'Erro interno.' });
+  }
+}
 
